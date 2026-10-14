@@ -1,7 +1,7 @@
 :root{--bg:#f5f7fb;--card:#fff;--ink:#0f1b2d;--muted:#4a5568;--pri:#1f5fbf;--navy:#0f2a4a;--line:#d5dce6;--red:#b71c1c;--amber:#8a5200;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg)}
 *{box-sizing:border-box}body{margin:0}h1{font-size:1.5rem;margin:.2rem 0}h2{font-size:1.1rem;margin:.2rem 0}
 .app{max-width:640px;margin:0 auto;min-height:100vh;padding-bottom:84px}
-.top{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;padding:calc(env(safe-area-inset-top) + 10px) 16px 10px;background:var(--navy);color:#fff}
+.sticky{position:sticky;top:0;z-index:5}.top{display:flex;justify-content:space-between;align-items:center;padding:calc(env(safe-area-inset-top) + 10px) 16px 10px;background:var(--navy);color:#fff}
 .brand{display:flex;gap:8px;align-items:center;font-weight:700;font-size:1.15rem}
 .chip{background:#ffffff22;color:#fff;border:1px solid #ffffff55;border-radius:99px;padding:6px 12px;font:inherit;min-height:36px}
 .content{padding:16px}.center{max-width:480px;margin:0 auto;padding:40px 20px;display:flex;flex-direction:column;gap:14px;text-align:center}.narrow{text-align:left}.narrow img{align-self:center}
@@ -37,3 +37,6 @@ details summary{cursor:pointer;font-weight:600;padding:6px 0;color:var(--pri)}.a
 .heat span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar{height:14px;background:#eceff3;border-radius:7px;overflow:hidden}.bar span{display:block;height:100%}
 .toast{display:none}.toast.show{display:block;background:#dff3e4;color:#14532d;border:1px solid #9ccfaa;padding:10px 14px;border-radius:10px;margin-bottom:12px;font-weight:600}
 .demo{background:#ffd54a;color:#1a1300;text-align:center;font-weight:800;font-size:.85rem;padding:5px;letter-spacing:.02em}
+.small{font-size:.85rem}.check{flex-direction:row;align-items:center;gap:10px;font-weight:600}.check input{width:22px;height:22px;min-height:0}
+.idcard{border-color:#8a96a8}.idcard legend{font-weight:700;padding:0 4px}
+.banned{background:#b71c1c;color:#fff;border-radius:14px;padding:16px;font-size:1.1rem}.banned b{font-size:1.3rem}.banned p{margin:.4rem 0}

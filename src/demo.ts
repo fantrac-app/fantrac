@@ -1,3 +1,4 @@
+import { idHash } from './idscan';
 import { put, sha256, evidenceFields, type Incident, type Person, type AlertRec, type Severity, type Status } from './db';
 
 /** Fake demo data only — invented venues, events and descriptions. */
@@ -13,12 +14,14 @@ export async function loadDemoData() {
   const incidents: Incident[] = [];
   for (const [n, [venue, event, sport, category, notes, severity, status, personDescription, ago]] of rows.entries()) {
     const t = new Date(now - ago * day).toISOString();
-    const base = { id: `DEMO${n + 1}`, createdAt: t, occurredAt: t, venue, event, sport, category, notes, personDescription, severity };
+    const base = { id: `DEMO${n + 1}`, createdAt: t, occurredAt: t, venue, event, sport, category, notes, personDescription, severity, ...(n === 0 ? { witnesses: 'Partner official A. Example; scorer’s table (fake demo data)' } : {}) };
     const inc: Incident = { ...base, status, evidenceHash: await sha256(evidenceFields(base)), audit: [{ at: t, role: 'official', action: 'Report submitted and locked' }] };
     if (status !== 'pending') inc.audit.push({ at: t, role: 'admin', action: `Review: ${status}`, note: status === 'needs_info' ? 'Any witnesses?' : status === 'rejected' ? 'Not enough detail' : undefined });
     incidents.push(inc);
   }
-  const person: Person = { id: 'DEMOP1', label: 'Person of concern (demo)', description: 'orange cap, green jacket (fake demo data)', incidentIds: ['DEMO1', 'DEMO2'], createdAt: incidents[1].createdAt,
+  // Obviously FAKE ID: state ZZ does not exist. Matches tests/fixtures/fake-license-pdf417.png.
+  const idInfo = { firstName: 'DEMO', lastName: 'SAMPLE', dob: '1990-01-01', state: 'ZZ', idLast4: '1234', idHash: await idHash('ZZ', 'ZZ00001234'), source: 'manual' as const, consentAt: new Date(now - 2 * day).toISOString() };
+  const person: Person = { idInfo, id: 'DEMOP1', label: 'Person of concern (demo)', description: 'orange cap, green jacket (fake demo data)', incidentIds: ['DEMO1', 'DEMO2'], createdAt: incidents[1].createdAt,
     ban: { venue: 'All Demo District venues', until: new Date(now + 180 * day).toISOString().slice(0, 10), reference: 'DEMO-2026-001', approvedAt: incidents[0].createdAt },
     audit: [{ at: incidents[1].createdAt, role: 'admin', action: 'Record created from reviewed report', note: '#DEMO2' }, { at: incidents[0].createdAt, role: 'admin', action: 'League/school ban decision recorded', note: 'Ref DEMO-2026-001' }] };
   incidents[0].personId = incidents[1].personId = person.id;

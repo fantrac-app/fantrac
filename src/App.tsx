@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { all, put, uid, sha256, evidenceFields, verifyEvidence, clearAll, type Role, type Incident, type AlertRec, type Person, type Severity, type Status, type AuditEntry } from './db';
 import { loadDemoData } from './demo';
-import { toCSV, toPDF, download } from './export';
+import { toCSV, toPDF, download, policePacket } from './export';
+import { getLeague, setLeague, activeBans, type ActiveBan } from './league';
+import type { IdInfo } from './db';
 
 const SPORTS = ['Basketball', 'Football', 'Baseball', 'Softball', 'Soccer', 'Volleyball', 'Wrestling', 'Hockey', 'Other'];
 const CATEGORIES = ['Verbal abuse', 'Threat', 'Physical contact', 'Thrown object', 'Followed official', 'Entered restricted area', 'Disruptive conduct', 'Other'];
@@ -55,11 +57,13 @@ export default function App() {
   const ctx = { role, incidents, alerts, persons, reload, setToast, setTab };
   return (
     <div className="app">
+      <div className="sticky">
       <header className="top">
         <div className="brand"><Logo small /> FanTrac</div>
         <button className="chip" onClick={() => { localStorage.removeItem('ft-role'); setRole(null); }} aria-label={`Role: ${role}. Switch role`}>{role === 'admin' ? 'Admin' : 'Official'} ▾</button>
       </header>
       <DemoBanner />
+      </div>
       <main className="content">
         <div role="status" aria-live="polite" className={toast ? 'toast show' : 'toast'}>{toast}</div>
         {tab === 'report' && <ReportForm {...ctx} />}
@@ -71,6 +75,7 @@ export default function App() {
         {tab === 'people' && <People {...ctx} />}
         {tab === 'gate' && <Gate {...ctx} />}
         {tab === 'venues' && <Venues {...ctx} />}
+        {tab === 'privacy' && role === 'admin' && <LeagueSettings setToast={setToast} />}
         {tab === 'privacy' && <Privacy embedded onSeed={seed} onReset={async () => { if (confirm('Erase all FanTrac data on this device?')) { await clearAll(); await reload(); setToast('All local data erased'); } }} />}
       </main>
       <nav className="tabs" aria-label="Sections">
@@ -112,13 +117,14 @@ function Privacy({ onAccept, embedded, onReset, onSeed }: { onAccept?: () => voi
 }
 
 function ReportForm({ role, reload, setToast, setTab }: Ctx) {
-  const [f, setF] = useState({ venue: localStorage.getItem('ft-venue') || '', event: '', occurredAt: nowLocal(), sport: 'Basketball', category: CATEGORIES[0], notes: '', personDescription: '', severity: 'medium' as Severity });
+  const [f, setF] = useState({ venue: localStorage.getItem('ft-venue') || '', event: '', occurredAt: nowLocal(), sport: 'Basketball', category: CATEGORIES[0], notes: '', personDescription: '', witnesses: '', severity: 'medium' as Severity });
   const [photo, setPhoto] = useState<string>();
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   const onPhoto = (file?: File) => { if (!file) return; const r = new FileReader(); r.onload = () => setPhoto(String(r.result)); r.readAsDataURL(file); };
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const base = { id: uid(), createdAt: new Date().toISOString(), ...f, occurredAt: new Date(f.occurredAt).toISOString(), photo };
+    const { witnesses, ...rest } = f;
+    const base = { id: uid(), createdAt: new Date().toISOString(), ...rest, ...(witnesses.trim() ? { witnesses: witnesses.trim() } : {}), occurredAt: new Date(f.occurredAt).toISOString(), photo };
     const inc: Incident = { ...base, status: 'pending', evidenceHash: await sha256(evidenceFields(base)), audit: [audit(role, 'Report submitted and locked')] };
     await put('incidents', inc); localStorage.setItem('ft-venue', f.venue);
     await reload(); setToast(`Report #${inc.id} saved — sent for admin review`); setTab(role === 'admin' ? 'review' : 'mine');
@@ -136,6 +142,7 @@ function ReportForm({ role, reload, setToast, setTab }: Ctx) {
       <label>What happened<select value={f.category} onChange={set('category')}>{CATEGORIES.map(s => <option key={s}>{s}</option>)}</select></label>
       <label>Notes<textarea required rows={4} value={f.notes} onChange={set('notes')} placeholder="What was said or done, when, and who saw it." /></label>
       <label>Person description <span className="muted">(optional, no name needed)</span><textarea rows={2} value={f.personDescription} onChange={set('personDescription')} placeholder="e.g. red cap, grey hoodie, section B row 3" /></label>
+      <label>Witnesses <span className="muted">(optional)</span><textarea rows={2} value={f.witnesses} onChange={set('witnesses')} placeholder="e.g. Partner official J. Doe, scorer's table" /></label>
       <fieldset><legend>Severity</legend><div className="seg">
         {(['low', 'medium', 'high'] as Severity[]).map(s => <label key={s} className={`segopt sev-${s} ${f.severity === s ? 'on' : ''}`}><input type="radio" name="sev" value={s} checked={f.severity === s} onChange={set('severity')} />{s[0].toUpperCase() + s.slice(1)}</label>)}
       </div></fieldset>
@@ -190,6 +197,7 @@ function IncidentCard({ i, children }: { i: Incident; children?: React.ReactNode
       <p className="muted">#{i.id} · {fmt(i.occurredAt)} · {i.venue} — {i.event} · {i.sport}</p>
       <p>{i.notes}</p>
       {i.personDescription && <p><span className="muted">Description:</span> {i.personDescription}</p>}
+      {i.witnesses && <p><span className="muted">Witnesses:</span> {i.witnesses}</p>}
       {i.photo && <img className="thumb" src={i.photo} alt="Evidence photo" />}
       <p><span className={`pill st-${i.status}`}>{STATUS_LABEL[i.status]}</span>{i.adminNote && <span className="muted"> — {i.adminNote}</span>}</p>
       <details><summary>Evidence &amp; audit trail</summary>
@@ -259,6 +267,13 @@ function Review({ role, incidents, persons, reload, setToast }: Ctx) {
         <button className="btn small secondary" onClick={() => decide(i, 'needs_info')}>Request info</button>
         <button className="btn small danger" onClick={() => decide(i, 'rejected')}>Reject</button>
       </div>}
+      {i.status === 'approved' && <button className="btn small secondary" onClick={async () => {
+        const blob = await policePacket(i, persons.find(p => p.id === i.personId), getLeague().name);
+        const file = new File([blob], `fantrac-police-packet-${i.id}.pdf`, { type: 'application/pdf' });
+        await put('incidents', { ...i, audit: [...i.audit, audit(role, 'Police report packet generated')] }); await reload();
+        if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: 'Incident report packet' }); return; } catch { /* fall back to download */ } }
+        download(file.name, file);
+      }}>📄 Police report packet (PDF)</button>}
       {i.status === 'approved' && (i.personId ? <p>🔗 {persons.find(p => p.id === i.personId)?.label}</p> :
         <label>Link to person of concern (admins only)<select defaultValue="" onChange={e => e.target.value && link(i, e.target.value)}>
           <option value="">Choose…</option><option value="new">+ New record</option>{persons.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>)}
@@ -270,17 +285,63 @@ function AlertsAdmin({ role, alerts, reload }: Ctx) {
   return <div className="stack"><h1>Live alerts</h1>
     {alerts.length === 0 && <p className="muted">No alerts.</p>}
     {alerts.map(a => <div className={`card ${a.kind === 'panic' && a.status === 'open' ? 'hot' : ''}`} key={a.id}>
-      <b>{a.kind.toUpperCase()}</b> · {a.message}<p className="muted">{fmt(a.createdAt)} · {a.venue}{a.event && ` — ${a.event}`}</p>
+      <b>{a.kind === 'checkin' ? 'CHECK-IN MATCH' : a.kind.toUpperCase()}</b> · {a.message}<p className="muted">{fmt(a.createdAt)} · {a.venue}{a.event && ` — ${a.event}`}</p>
       {a.location && <p>📍 {a.location}</p>}{a.recording && <p>⏺ {a.recording}</p>}
       {a.status === 'open' ? <button className="btn small" onClick={async () => { await put('alerts', { ...a, status: 'acknowledged', audit: [...a.audit, audit(role, 'Acknowledged')] }); await reload(); }}>Acknowledge — on my way</button> : <p className="pill st-approved">Acknowledged</p>}
     </div>)}
   </div>;
 }
 
+/** Admin-only ID capture. Decodes the PDF417 barcode on this device; manual entry is the fallback. */
+function IdCapture({ value, onChange }: { value: IdInfo | null; onChange: (v: IdInfo | null) => void }) {
+  const [consent, setConsent] = useState(!!value);
+  const [f, setF] = useState({ firstName: '', lastName: '', dob: '', state: '', idNumber: '' });
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
+  const save = async (src: IdInfo['source'], v = f) => {
+    if (!v.lastName || !v.idNumber || !v.state) { setMsg('Last name, ID number and state are required.'); return; }
+    const { idHash } = await import('./idscan');
+    onChange({ firstName: v.firstName.toUpperCase(), lastName: v.lastName.toUpperCase(), dob: v.dob, state: v.state.toUpperCase(), idLast4: v.idNumber.replace(/\W/g, '').slice(-4), idHash: await idHash(v.state, v.idNumber), source: src, consentAt: new Date().toISOString() });
+    setF({ ...f, idNumber: '' }); setMsg('');
+  };
+  const scan = async (file?: File) => {
+    if (!file) return; setBusy(true); setMsg('Reading barcode on this device…');
+    try {
+      const { decodeLicense, parseAamva } = await import('./idscan');
+      const text = await decodeLicense(file); const p = text ? parseAamva(text) : null;
+      if (!p) { setMsg('Could not read the barcode. Try again in good light, or type it in below.'); return; }
+      const v = { firstName: p.firstName, lastName: p.lastName, dob: p.dob, state: p.state, idNumber: p.idNumber };
+      setF(v); await save('scan', v);
+    } catch { setMsg('Scanner unavailable. Type it in below.'); } finally { setBusy(false); }
+  };
+  if (value) return <div className="card idcard" data-testid="id-summary">
+    <b>ID attached</b> <span className="pill st-approved">{value.source === 'scan' ? 'Scanned' : 'Entered'}</span>
+    <p>{value.firstName} {value.lastName} · DOB {value.dob || '—'} · {value.state} ID ••••{value.idLast4}</p>
+    <button type="button" className="btn small secondary" onClick={() => onChange(null)}>Remove ID</button></div>;
+  return <fieldset className="card stack idcard"><legend>ID (optional, admins only)</legend>
+    <p className="muted small" data-testid="id-legal">Only scan an ID when the person hands it to you or under your school or league's written policy. The barcode is read on this device; nothing is sent to any server. Only name, date of birth, state and the last 4 digits of the ID number are kept (plus a one-way fingerprint for check-in matching). Check your state's ID-scanning and privacy laws before real use.</p>
+    <label className="check"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} /> I have consent or policy authority to record this ID</label>
+    {consent && <>
+      <label className="file">{busy ? 'Reading…' : '📷 Scan back of license (PDF417)'}<input type="file" accept="image/*" capture="environment" disabled={busy} aria-label="Scan back of license" onChange={e => scan(e.target.files?.[0])} /></label>
+      <p className="muted small">Or type it in:</p>
+      <div className="row"><label>First name<input value={f.firstName} onChange={set('firstName')} /></label><label>Last name<input value={f.lastName} onChange={set('lastName')} /></label></div>
+      <div className="row"><label>Date of birth<input type="date" value={f.dob} onChange={set('dob')} /></label><label>State<input value={f.state} maxLength={2} onChange={set('state')} placeholder="KY" /></label></div>
+      <label>ID number<input value={f.idNumber} onChange={set('idNumber')} autoComplete="off" /></label>
+      <button type="button" className="btn small" onClick={() => save('manual')}>Attach ID</button>
+    </>}
+    {msg && <p role="alert">{msg}</p>}
+  </fieldset>;
+}
+
 function People({ role, persons, incidents, reload, setToast }: Ctx) {
+  const [ids, setIds] = useState<Record<string, IdInfo | null>>({});
   const record = async (p: Person, f: FormData) => {
     const ban = { venue: String(f.get('venue')), until: String(f.get('until')), reference: String(f.get('ref')), approvedAt: new Date().toISOString() };
-    await put('persons', { ...p, ban, audit: [...p.audit, audit(role, 'League/school ban decision recorded', `Ref ${ban.reference}, ${ban.venue} until ${ban.until}`)] });
+    const idInfo = ids[p.id] ?? undefined;
+    const log = [audit(role, 'League/school ban decision recorded', `Ref ${ban.reference}, ${ban.venue} until ${ban.until}`)];
+    if (idInfo) log.push(audit(role, `ID attached (${idInfo.source})`, `${idInfo.state} ••••${idInfo.idLast4}`));
+    await put('persons', { ...p, ban, idInfo: idInfo ?? p.idInfo, audit: [...p.audit, ...log] });
     await reload(); setToast('Ban decision recorded');
   };
   const lift = async (p: Person) => { await put('persons', { ...p, ban: undefined, audit: [...p.audit, audit(role, 'Ban lifted / expired')] }); await reload(); };
@@ -290,6 +351,7 @@ function People({ role, persons, incidents, reload, setToast }: Ctx) {
     {persons.map(p => <article className="card" key={p.id} data-testid="person">
       <div className="between"><b>{p.label}</b>{p.ban && <span className="pill sev-high">Banned by league</span>}</div>
       <p>{p.description}</p><p className="muted">{p.incidentIds.length} linked report(s): {p.incidentIds.map(id => '#' + id).join(', ')} · {incidents.filter(i => p.incidentIds.includes(i.id)).map(i => i.venue).filter((v, n, a) => a.indexOf(v) === n).join(', ')}</p>
+      {p.idInfo && <p data-testid="person-id">🪪 {p.idInfo.firstName} {p.idInfo.lastName} · DOB {p.idInfo.dob || '—'} · {p.idInfo.state} ID ••••{p.idInfo.idLast4}</p>}
       {p.ban ? <><p>Ban: {p.ban.venue} until {p.ban.until} · Ref {p.ban.reference}</p><button className="btn small secondary" onClick={() => lift(p)}>Lift ban</button></> :
         <details><summary>Record a ban decision</summary>
           <form className="stack" onSubmit={e => { e.preventDefault(); record(p, new FormData(e.currentTarget)); }}>
@@ -297,6 +359,7 @@ function People({ role, persons, incidents, reload, setToast }: Ctx) {
             <label>Venue(s)<input name="venue" required placeholder="All district venues" /></label>
             <label>Until<input name="until" type="date" required /></label>
             <label>Decision reference #<input name="ref" required placeholder="e.g. KHSAA-2026-114" /></label>
+            <IdCapture value={ids[p.id] ?? null} onChange={v => setIds({ ...ids, [p.id]: v })} />
             <button className="btn small">Save ban decision</button>
           </form></details>}
       <details><summary>Audit trail</summary><ol className="audit">{p.audit.map((a, n) => <li key={n}>{fmt(a.at)} · {a.role} · {a.action}{a.note ? ` — ${a.note}` : ''}</li>)}</ol></details>
@@ -304,19 +367,68 @@ function People({ role, persons, incidents, reload, setToast }: Ctx) {
   </div>;
 }
 
-function Gate({ persons }: Ctx) {
+function BanHit({ b }: { b: ActiveBan }) {
+  return <div className="card hot" data-testid="gate-hit"><b>Possible match: {b.label}</b><p>{b.description}</p>
+    <p>Banned at {b.venue} until {b.until} · Ref {b.reference}</p><p className="muted">Source: {b.source}</p></div>;
+}
+
+function Gate({ role, persons, reload }: Ctx) {
   const [q, setQ] = useState('');
-  const today = new Date().toISOString().slice(0, 10);
-  const banned = persons.filter(p => p.ban && p.ban.until >= today);
+  const [name, setName] = useState('');
+  const [result, setResult] = useState<{ hit?: ActiveBan; checked: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const league = getLeague();
+  const bans = activeBans(persons, league);
   const words = q.toLowerCase().split(/\s+/).filter(w => w.length > 1);
-  const hits = words.length ? banned.filter(p => words.every(w => (p.description + ' ' + p.ban!.venue + ' ' + p.label).toLowerCase().includes(w))) : [];
-  return <div className="stack"><h1>Gate check</h1>
-    <p className="muted">Checks only active, league-approved bans ({banned.length}). Match on description — no names, no face recognition. A match means: call the admin, don't confront.</p>
+  const hits = words.length ? bans.filter(b => words.every(w => (b.description + ' ' + b.venue + ' ' + b.label).toLowerCase().includes(w))) : [];
+  const finish = async (hit: ActiveBan | undefined, checked: string) => {
+    setResult({ hit, checked });
+    if (hit) {
+      await put('alerts', { id: uid(), createdAt: new Date().toISOString(), kind: 'checkin', venue: localStorage.getItem('ft-venue') || 'Gate', event: '', message: `Check-in match: ${hit.label} (ref ${hit.reference}) — staff told not to confront`, status: 'open', audit: [audit(role, 'Check-in match alert created', hit.source)] });
+      await reload();
+    }
+  };
+  const checkName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { nameKey } = await import('./idscan');
+    const parts = name.trim().split(/\s+/); if (parts.length < 2) { setResult({ checked: 'Enter first and last name' }); return; }
+    const key = nameKey(parts[0], parts[parts.length - 1]);
+    await finish(bans.find(b => b.idInfo && nameKey(b.idInfo.firstName, b.idInfo.lastName) === key), name);
+  };
+  const scan = async (file?: File) => {
+    if (!file) return; setBusy(true);
+    try {
+      const { decodeLicense, parseAamva, idHash, nameKey } = await import('./idscan');
+      const text = await decodeLicense(file); const p = text ? parseAamva(text) : null;
+      if (!p) { setResult({ checked: 'Could not read the ID barcode — type the name instead' }); return; }
+      const h = await idHash(p.state, p.idNumber), k = nameKey(p.firstName, p.lastName);
+      await finish(bans.find(b => b.idInfo && (b.idInfo.idHash === h || (nameKey(b.idInfo.firstName, b.idInfo.lastName) === k && (!b.idInfo.dob || b.idInfo.dob === p.dob)))), `${p.firstName} ${p.lastName} (${p.state} ••••${p.idNumber.slice(-4)})`);
+    } finally { setBusy(false); }
+  };
+  return <div className="stack"><h1>Gate &amp; check-in</h1>
+    <p className="muted">Checks only active, admin-approved bans ({bans.length}){league.share ? ` including bans shared by ${league.name}` : ''}. No face recognition. A match means: call the admin, don't confront.</p>
+    <section className="card stack" aria-labelledby="ci"><h2 id="ci">Check-in</h2>
+      <label className="file">{busy ? 'Reading…' : '🪪 Scan ID barcode'}<input type="file" accept="image/*" capture="environment" aria-label="Scan ID at check-in" onChange={e => scan(e.target.files?.[0])} /></label>
+      <form onSubmit={checkName} className="row"><label>Or type name<input value={name} onChange={e => setName(e.target.value)} placeholder="First Last" /></label><button className="btn" style={{ alignSelf: 'end' }}>Check</button></form>
+      {result && (result.hit ? <div className="banned" role="alert" data-testid="checkin-banned"><b>Banned – call admin, do not confront</b><p>{result.checked} · {result.hit.label} · Ref {result.hit.reference} · {result.hit.source}</p><p>Admin alert created.</p></div>
+        : <div className="card" data-testid="checkin-clear" role="status">{result.checked.startsWith('Could') || result.checked.startsWith('Enter') ? result.checked : `No active ban for ${result.checked}.`}</div>)}
+    </section>
+    <h2>Description check</h2>
     <label>Describe who's at the gate<input value={q} onChange={e => setQ(e.target.value)} placeholder="e.g. red cap" /></label>
-    {words.length > 0 && (hits.length ? hits.map(p => <div className="card hot" key={p.id} data-testid="gate-hit"><b>Possible match: {p.label}</b><p>{p.description}</p><p>Banned at {p.ban!.venue} until {p.ban!.until} · Ref {p.ban!.reference}</p></div>)
-      : <div className="card" data-testid="gate-none">No active ban matches.</div>)}
+    {words.length > 0 && (hits.length ? hits.map(b => <BanHit key={b.key} b={b} />) : <div className="card" data-testid="gate-none">No active ban matches.</div>)}
   </div>;
 }
+
+function LeagueSettings({ setToast }: { setToast: (s: string) => void }) {
+  const [l, setL] = useState(getLeague());
+  const upd = (v: typeof l) => { setL(v); setLeague(v); };
+  return <section className="card stack" aria-labelledby="lg"><h2 id="lg">League sharing (demo)</h2>
+    <label>League or association<input value={l.name} onChange={e => upd({ ...l, name: e.target.value })} /></label>
+    <label className="check"><input type="checkbox" checked={l.share} onChange={e => { upd({ ...l, share: e.target.checked }); setToast(e.target.checked ? 'Sharing bans with member schools (simulated)' : 'League sharing off'); }} /> Share bans with member schools</label>
+    <p className="muted small">Simulated on this device: when on, your active bans count as shared, and a fake ban from “Demo North HS” appears in Gate &amp; check-in. Only bans already approved through the league's process should be shared.</p>
+  </section>;
+}
+
 
 function Venues({ incidents }: Ctx) {
   const [venue, setVenue] = useState('');
