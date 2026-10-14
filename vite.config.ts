@@ -14,6 +14,6 @@ export default defineConfig({
       icons: [{ src: 'icon-192.png', sizes: '192x192', type: 'image/png' }, { src: 'icon-512.png', sizes: '512x512', type: 'image/png' }, { src: 'icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }]
     },
     scope: base,
-    workbox: { navigateFallback: base + 'index.html', globPatterns: ['**/*.{js,css,html,svg,png}'] }
+    workbox: { navigateFallback: base + 'index.html', globPatterns: ['**/*.{js,css,html,svg,png,wasm}'], maximumFileSizeToCacheInBytes: 4 * 1024 * 1024 }
   })]
 });
